@@ -1,8 +1,7 @@
 import { Options } from './types'
 import { embedResources } from './embed-resources'
 import { toArray, isInstanceOfElement } from './util'
-import { isDataUrl, resourceToDataURL } from './dataurl'
-import { getMimeType } from './mimes'
+import { isDataUrl } from './dataurl'
 
 async function embedProp(
   propName: string,
@@ -36,7 +35,6 @@ async function embedBackground<T extends HTMLElement>(
 
 async function embedImageNode<T extends HTMLElement | SVGImageElement>(
   clonedNode: T,
-  options: Options,
 ) {
   const isImageElement = isInstanceOfElement(clonedNode, HTMLImageElement)
 
@@ -52,27 +50,41 @@ async function embedImageNode<T extends HTMLElement | SVGImageElement>(
 
   const url = isImageElement ? clonedNode.src : clonedNode.href.baseVal
 
-  const dataURL = await resourceToDataURL(url, getMimeType(url), options)
-  await new Promise((resolve, reject) => {
-    clonedNode.onload = resolve
-    clonedNode.onerror = reject
-
-    const image = clonedNode as HTMLImageElement
-    if (image.decode) {
-      image.decode = resolve as any
+  try {
+    const response = await fetch(url)
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`)
     }
+    const blob = await response.blob()
+    const objectURL = window.URL.createObjectURL(blob)
 
-    if (image.loading === 'lazy') {
-      image.loading = 'eager'
-    }
+    await new Promise<void>((resolve, reject) => {
+      // clonedNode.onload = () => {
+      //   resolve()
+      //   // Revoke the object URL after the image has loaded to free up memory
+      //   window.URL.revokeObjectURL(objectURL)
+      // }
+      clonedNode.onerror = (e) => reject(new Error(`Image loading error: ${e}`))
 
-    if (isImageElement) {
-      clonedNode.srcset = ''
-      clonedNode.src = dataURL
-    } else {
-      clonedNode.href.baseVal = dataURL
-    }
-  })
+      const image = clonedNode as HTMLImageElement
+      if (image.decode) {
+        image.decode().then(resolve).catch(reject)
+      }
+
+      if (image.loading === 'lazy') {
+        image.loading = 'eager'
+      }
+
+      if (isImageElement) {
+        clonedNode.srcset = ''
+        clonedNode.src = objectURL
+      } else {
+        ;(clonedNode as SVGImageElement).href.baseVal = objectURL
+      }
+    })
+  } catch (error) {
+    //
+  }
 }
 
 async function embedChildren<T extends HTMLElement>(
@@ -90,7 +102,7 @@ export async function embedImages<T extends HTMLElement>(
 ) {
   if (isInstanceOfElement(clonedNode, Element)) {
     await embedBackground(clonedNode, options)
-    await embedImageNode(clonedNode, options)
+    await embedImageNode(clonedNode)
     await embedChildren(clonedNode, options)
   }
 }
